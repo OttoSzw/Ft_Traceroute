@@ -43,8 +43,10 @@ int resolve_host(char *host, struct sockaddr_in *addr)
 
     *addr = *(struct sockaddr_in *)res->ai_addr;
     char str[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &res->ai_addr, str, INET_ADDRSTRLEN);
-    printf("testtt  %s\n", str);
+
+    struct sockaddr_in *ipv4 = (struct sockaddr_in *)res->ai_addr;
+    inet_ntop(AF_INET, &ipv4->sin_addr, str, INET_ADDRSTRLEN);
+    printf("IP =  %s\n", str);
     freeaddrinfo(res);
     return 0;
 }
