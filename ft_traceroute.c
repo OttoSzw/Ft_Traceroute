@@ -29,31 +29,28 @@ int create_socket()
         perror("socket");
         return -1;
     }
-    return sockfd;
+    return (sockfd);
 }
 
-int resolve_host(char *host, struct sockaddr_in *addr)
+int resolve_host(char *host, char *ip, struct sockaddr_in *addr)
 {
     struct addrinfo hints = {0}, *res;
 
     hints.ai_family = AF_INET;
 
     if (getaddrinfo(host, NULL, &hints, &res) != 0)
-        return perror("getaddrinfo"), -1;
+        return (perror("getaddrinfo"), -1);
 
     *addr = *(struct sockaddr_in *)res->ai_addr;
-    char str[INET_ADDRSTRLEN];
-
     struct sockaddr_in *ipv4 = (struct sockaddr_in *)res->ai_addr;
-    inet_ntop(AF_INET, &ipv4->sin_addr, str, INET_ADDRSTRLEN);
-    printf("IP =  %s\n", str);
+    inet_ntop(AF_INET, &ipv4->sin_addr, ip, INET_ADDRSTRLEN);
     freeaddrinfo(res);
-    return 0;
+    return (0);
 }
 
-void traceroute(char *host, int sockfd, struct sockaddr_in *addr)
+void traceroute(char *host, char *ip, int sockfd, struct sockaddr_in *addr)
 {
-    printf("traceroute to %s\n", host);
+    printf("traceroute to %s (%s), 30hops max, 60 byte packets\n", host, ip);
 
     for (int ttl = 1; ttl <= 30; ttl++)
     {
@@ -79,16 +76,20 @@ void traceroute(char *host, int sockfd, struct sockaddr_in *addr)
 
         gettimeofday(&end, NULL);
 
-        double time_ms =
-            (end.tv_sec - start.tv_sec) * 1000.0 +
+        double time_ms = (end.tv_sec - start.tv_sec) * 1000.0 +
             (end.tv_usec - start.tv_usec) / 1000.0;
 
         struct ip *ip_hdr = (struct ip *)buffer;
         struct icmp *icmp_hdr = (struct icmp *)(buffer + ip_hdr->ip_hl * 4);
 
-        printf("%2d  %s  %.3f ms\n",ttl,inet_ntoa(sender.sin_addr),
+        char gatewayName[1024];
+        int ret = getnameinfo((struct sockaddr *)&sender, sizeof(sender), gatewayName, sizeof(gatewayName), NULL, 0, NI_NAMEREQD);
+        if (ret != 0)
+            printf("%2d  %s (%s)  %.3f ms\n", ttl, inet_ntoa(sender.sin_addr), inet_ntoa(sender.sin_addr),
                time_ms);
-
+        else
+            printf("%2d  %s (%s)  %.3f ms\n", ttl, gatewayName, inet_ntoa(sender.sin_addr),
+                time_ms);
         // la destination
         if (icmp_hdr->icmp_type == ICMP_ECHOREPLY)
         {
@@ -109,20 +110,21 @@ int main(int ac, char **av)
     if (ac != 2)
     {
         fprintf(stderr, "Usage: %s <host>\n", av[0]);
-        return 1;
+        return (1);
     }
 
     char *host = av[1];
 
     int sockfd = create_socket();
     if (sockfd < 0)
-        return 1;
+        return (1);
 
+    char ip[INET_ADDRSTRLEN];
     struct sockaddr_in addr;
-    if (resolve_host(host, &addr) < 0)
-        return 1;
+    if (resolve_host(host, ip, &addr) < 0)
+        return (1);
 
-    traceroute(host, sockfd, &addr);
+    traceroute(host, ip, sockfd, &addr);
 
-    return 0;
+    return (0);
 }
