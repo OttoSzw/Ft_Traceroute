@@ -42,8 +42,10 @@ int resolve_host(char *host, struct sockaddr_in *addr)
         return perror("getaddrinfo"), -1;
 
     *addr = *(struct sockaddr_in *)res->ai_addr;
+    char str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &res->ai_addr, str, INET_ADDRSTRLEN);
+    printf("testtt  %s\n", str);
     freeaddrinfo(res);
-
     return 0;
 }
 
@@ -82,12 +84,10 @@ void traceroute(char *host, int sockfd, struct sockaddr_in *addr)
         struct ip *ip_hdr = (struct ip *)buffer;
         struct icmp *icmp_hdr = (struct icmp *)(buffer + ip_hdr->ip_hl * 4);
 
-        printf("%2d  %s  %.3f ms\n",
-               ttl,
-               inet_ntoa(sender.sin_addr),
+        printf("%2d  %s  %.3f ms\n",ttl,inet_ntoa(sender.sin_addr),
                time_ms);
 
-        // 🎯 FIN traceroute
+        // la destination
         if (icmp_hdr->icmp_type == ICMP_ECHOREPLY)
         {
             printf("destination reached\n");
@@ -97,7 +97,7 @@ void traceroute(char *host, int sockfd, struct sockaddr_in *addr)
         // option debug utile
         if (icmp_hdr->icmp_type == ICMP_TIME_EXCEEDED)
         {
-            // routeur intermédiaire
+            // nos routeurs intermediaires
         }
     }
 }
