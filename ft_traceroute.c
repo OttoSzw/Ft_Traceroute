@@ -1,128 +1,163 @@
 #include "ft_traceroute.h"
 
-void send_packet(char *host, int sockfd, struct sockaddr_in *addr, int seq)
+void send_packet(int sockfd, struct sockaddr_in *addr, int ttl, int probe)
 {
-    (void)host;
-    char packet[64];
-    memset(packet, 0, sizeof(packet));
+    // Each probe goes to a different port so we can match replies
+    struct sockaddr_in dest = *addr;
+    dest.sin_port = htons(33434 + (ttl - 1) * 3 + probe);
 
-    struct icmp *icmp_hdr = (struct icmp *)packet;
+    setsockopt(sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
 
-    icmp_hdr->icmp_type = ICMP_ECHO;
-    icmp_hdr->icmp_code = 0;
-    icmp_hdr->icmp_id = getpid();
-    icmp_hdr->icmp_seq = htons(seq);
+    char payload[60];
+    memset(payload, 0, sizeof(payload));
+    sendto(sockfd, payload, sizeof(payload), 0, (struct sockaddr *)&dest, sizeof(dest));
+}
+// Returns 1 if destination reached, 0 to continue, -1 on timeout/error
+int receive_probe(int recv_fd, int ttl, int probe,
+                double *time_ms, char *out_name, char *out_ip)
+{
+    char               buffer[1024];
+    struct sockaddr_in sender;
+    socklen_t          len = sizeof(sender);
+    struct timeval     start, end;
 
-    icmp_hdr->icmp_cksum = 0;
-    icmp_hdr->icmp_cksum = checksum(packet, sizeof(packet));
+    gettimeofday(&start, NULL);
+    ssize_t size = recvfrom(recv_fd, buffer, sizeof(buffer), 0,
+                            (struct sockaddr *)&sender, &len);
+    gettimeofday(&end, NULL);
 
-    sendto(sockfd, packet, sizeof(packet), 0,
-           (struct sockaddr *)addr,
-           sizeof(*addr));
+    if (size < 0)
+        return -1;
+
+    *time_ms = (end.tv_sec  - start.tv_sec)  * 1000.0
+                + (end.tv_usec - start.tv_usec) / 1000.0;
+
+    struct ip   *ip_hdr   = (struct ip *)buffer;
+    struct icmp *icmp_hdr = (struct icmp *)(buffer + ip_hdr->ip_hl * 4);
+
+    int type = icmp_hdr->icmp_type;
+    int code = icmp_hdr->icmp_code;
+
+    // We only care about TIME_EXCEEDED or PORT_UNREACH (destination reached)
+    if (type == ICMP_TIME_EXCEEDED && code == ICMP_EXC_TTL) {
+        // Verify inner UDP header matches our probe's destination port
+        struct ip  *inner_ip  = (struct ip *)(buffer + ip_hdr->ip_hl * 4 + 8);
+        struct udphdr *inner_udp = (struct udphdr *)((char *)inner_ip + inner_ip->ip_hl * 4);
+        int expected_port = 33434 + (ttl - 1) * 3 + probe;
+        if (ntohs(inner_udp->dest) != expected_port)
+            return -1; // not our probe
+    } else if (type == ICMP_DEST_UNREACH && code == ICMP_PORT_UNREACH) {
+        // Destination host sent "port unreachable" = we arrived!
+        struct ip  *inner_ip  = (struct ip *)(buffer + ip_hdr->ip_hl * 4 + 8);
+        struct udphdr *inner_udp = (struct udphdr *)((char *)inner_ip + inner_ip->ip_hl * 4);
+        int expected_port = 33434 + (ttl - 1) * 3 + probe;
+        if (ntohs(inner_udp->dest) != expected_port)
+            return -1;
+        // Resolve and return "reached"
+        strncpy(out_ip, inet_ntoa(sender.sin_addr), INET_ADDRSTRLEN);
+        int r = getnameinfo((struct sockaddr *)&sender, sizeof(sender), out_name, 1024, NULL, 0, NI_NAMEREQD);
+        if (r != 0)
+            strncpy(out_name, out_ip, 1024);
+        return 1; // destination reached
+    }
+    else
+    {
+        return -1;
+    }
+
+    strncpy(out_ip, inet_ntoa(sender.sin_addr), INET_ADDRSTRLEN);
+    int r = getnameinfo((struct sockaddr *)&sender, sizeof(sender), out_name, 1024, NULL, 0, NI_NAMEREQD);
+    if (r != 0) strncpy(out_name, out_ip, 1024);
+    return 0;
 }
 
-
-
-void traceroute(char *host, char *ip, int sockfd, struct sockaddr_in *addr)
+void traceroute(char *host, char *ip, int send_fd, int recv_fd, struct sockaddr_in *addr)
 {
+    // Ajout du timeout au cas ou le paquet est perdu 3s
+    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+    setsockopt(recv_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     printf("traceroute to %s (%s), 30 hops max, 60 byte packets\n", host, ip);
-    
     for (int ttl = 1; ttl <= 30; ttl++)
     {
-        setsockopt(sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
-        
-        for (int loop = 0; loop < 3; loop++)
+        printf("%2d  ", ttl);
+        fflush(stdout); // on ecrit sans attendre le buffer
+
+        int  reached     = 0;
+        int  printed_host = 0;
+        char name[1024], sender_ip[INET_ADDRSTRLEN];
+
+        for (int probe = 0; probe < 3; probe++)
         {
-            struct timeval start, end;
-            gettimeofday(&start, NULL);
-            
-            send_packet(host, sockfd, addr, ttl);
-            
-            char buffer[1024];
-            struct sockaddr_in sender;
-            socklen_t len = sizeof(sender);
-            
-            ssize_t size = recvfrom(sockfd, buffer, sizeof(buffer), 0,
-            (struct sockaddr *)&sender, &len);
-            
-            if (size < 0)
+            send_packet(send_fd, addr, ttl, probe);
+
+            double time_ms;
+            int ret = receive_probe(recv_fd, ttl, probe,
+                                    &time_ms, name, sender_ip);
+            if (ret < 0)
+                printf("* ");
+            else 
             {
-                printf("%2d  *\n", ttl);
-                continue;
+                if (!printed_host)
+                {
+                    printf("%s (%s)  ", name, sender_ip);
+                    printed_host = 1;
+                }
+                printf("%.3f ms  ", time_ms);
+                if (ret == 1)
+                    reached = 1;
             }
-            
-            gettimeofday(&end, NULL);
-            
-            double time_ms = (end.tv_sec - start.tv_sec) * 1000.0 +
-            (end.tv_usec - start.tv_usec) / 1000.0;
-            
-            struct ip *ip_hdr = (struct ip *)buffer;
-            struct icmp *icmp_hdr = (struct icmp *)(buffer + ip_hdr->ip_hl * 4);
-            
-            char gatewayName[1024];
-            int ret = getnameinfo((struct sockaddr *)&sender, sizeof(sender), gatewayName, sizeof(gatewayName), NULL, 0, NI_NAMEREQD);
-            if (ret != 0)
-            printf("%2d  %s (%s)  %.3f ms\n", ttl, inet_ntoa(sender.sin_addr), inet_ntoa(sender.sin_addr),
-            time_ms);
-            else
-            printf("%2d  %s (%s)  %.3f ms\n", ttl, gatewayName, inet_ntoa(sender.sin_addr),
-            time_ms);
-            // la destination
-            if (icmp_hdr->icmp_type == ICMP_ECHOREPLY)
-            {
-                printf("destination reached\n");
-                break;
-            }
+            fflush(stdout);
         }
-        // if (icmp_hdr->icmp_type == ICMP_TIME_EXCEEDED)
-        // {
-            //     // nos routeurs intermediaires
-            // }
-        }
+        printf("\n");
+        if (reached) 
+            break;
     }
+}
+
+int resolve_host(char *host, char *ip, struct sockaddr_in *addr)
+{
+    struct addrinfo hints = {0}, *res;
     
-    int resolve_host(char *host, char *ip, struct sockaddr_in *addr)
-    {
-        struct addrinfo hints = {0}, *res;
-        
-        hints.ai_family = AF_INET;
-        
-        if (getaddrinfo(host, NULL, &hints, &res) != 0)
+    hints.ai_family = AF_INET;
+    
+    if (getaddrinfo(host, NULL, &hints, &res) != 0)
         return (perror("getaddrinfo"), -1);
-        
-        *addr = *(struct sockaddr_in *)res->ai_addr;
-        struct sockaddr_in *ipv4 = (struct sockaddr_in *)res->ai_addr;
-        inet_ntop(AF_INET, &ipv4->sin_addr, ip, INET_ADDRSTRLEN);
-        freeaddrinfo(res);
-        return (0);
-    }
     
-    int create_socket()
-    {
-        int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-        if (sockfd < 0)
-        {
-            perror("socket");
-            return -1;
-        }
-        return (sockfd);
-    }
-    
-    int main(int ac, char **av)
-    {
-        if (ac != 2)
-            return (fprintf(stderr, "Usage: %s <host>\n", av[0]), 1);
-        char *host = av[1];
-        int sockfd = create_socket();
-        if (sockfd < 0)
-            return (1);
+    *addr = *(struct sockaddr_in *)res->ai_addr;
+    inet_ntop(AF_INET, &addr->sin_addr, ip, INET_ADDRSTRLEN);
+    freeaddrinfo(res);
+    return (0);
+}
 
-        char ip[INET_ADDRSTRLEN];
-        struct sockaddr_in addr;
-        if (resolve_host(host, ip, &addr) < 0)
-            return (1);
+void create_sockets(int *send_fd, int *recv_fd)
+{
+    // socket pour mon raw UDP
+    *send_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (*send_fd < 0)
+        return (perror("send socket"));
 
-        traceroute(host, ip, sockfd, &addr);
+    // socket pour mon raw ICMP
+    *recv_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (*recv_fd < 0)
+        return (perror("recv socket"));
+}
 
-        return (0);
+int main(int ac, char **av)
+{
+    if (ac != 2)
+    return (fprintf(stderr, "Usage: %s <host>\n", av[0]), 1);
+
+    int recv_fd, send_fd;
+    create_sockets(&send_fd, &recv_fd);
+    if (send_fd < 0 || recv_fd < 0)
+        return (1);
+
+    char ip[INET_ADDRSTRLEN];
+    struct sockaddr_in addr;
+    if (resolve_host(av[1], ip, &addr) < 0) 
+        return (1);
+
+    traceroute(av[1], ip, send_fd, recv_fd, &addr);
+    return (0);
 }
