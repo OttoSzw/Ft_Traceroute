@@ -83,37 +83,40 @@ void traceroute(char *host, char *ip, int send_fd, int recv_fd, struct sockaddr_
     printf("traceroute to %s (%s), %d hops max, 60 byte packets\n", host, ip, opts->max_ttl);
     for (int ttl = 1; ttl <= opts->max_ttl; ttl++)
     {
-        printf("%2d  ", ttl);
-        fflush(stdout); // on ecrit sans attendre le buffer
-
-        int  reached = 0;
-        int  printed_host = 0;
-        char name[1024], sender_ip[INET_ADDRSTRLEN];
-
-        for (int probe = 0; probe < opts->nqueries; probe++)
+        if (ttl >= opts->start_ttl)
         {
-            send_packet(send_fd, addr, ttl, probe, opts);
-
-            double time_ms;
-            int ret = receive_probe(recv_fd, ttl, probe, &time_ms, name, sender_ip, opts);
-            if (ret < 0)
-                printf("* ");
-            else 
+            printf("%2d  ", ttl);
+            fflush(stdout); // on ecrit sans attendre le buffer
+    
+            int  reached = 0;
+            int  printed_host = 0;
+            char name[1024], sender_ip[INET_ADDRSTRLEN];
+    
+            for (int probe = 0; probe < opts->nqueries; probe++)
             {
-                if (!printed_host)
+                send_packet(send_fd, addr, ttl, probe, opts);
+    
+                double time_ms;
+                int ret = receive_probe(recv_fd, ttl, probe, &time_ms, name, sender_ip, opts);
+                if (ret < 0)
+                    printf("* ");
+                else 
                 {
-                    printf("%s (%s)  ", name, sender_ip);
-                    printed_host = 1;
+                    if (!printed_host)
+                    {
+                        printf("%s (%s)  ", name, sender_ip);
+                        printed_host = 1;
+                    }
+                    printf("%.3f ms  ", time_ms);
+                    if (ret == 1)
+                        reached = 1;
                 }
-                printf("%.3f ms  ", time_ms);
-                if (ret == 1)
-                    reached = 1;
+                fflush(stdout);
             }
-            fflush(stdout);
+            printf("\n");
+            if (reached) 
+                break;
         }
-        printf("\n");
-        if (reached) 
-            break;
     }
 }
 

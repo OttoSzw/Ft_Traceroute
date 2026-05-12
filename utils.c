@@ -1,11 +1,5 @@
 #include "ft_traceroute.h"
 
-void fill_data(uint8_t *data, int size)
-{
-    for (int i = 0; i < size; i++)
-        data[i] = i;
-}
-
 uint16_t checksum(void *data, int length)
 {
     uint16_t *buf = (uint16_t *)data;
@@ -36,16 +30,17 @@ static void print_help(char *prog)
     printf("  -q <nqueries>  Number of probes per hop (default: 3)\n");
     printf("  -p <port>      Base UDP destination port (default: 33434)\n");
     printf("  -n             Do not resolve IP addresses to hostnames\n");
+    printf("  -f             Start from the start_ttl hop (instead from 1)\n");
     printf("  --help         Show this help\n");
 }
 
 int parse_args(int ac, char **av, t_opts *opts, char **host)
 {
-    // valeurs par défaut
     opts->max_ttl  = 30;
     opts->nqueries = 3;
     opts->port     = 33434;
     opts->no_dns   = 0;
+    opts->start_ttl= 1;
     *host          = NULL;
 
     for (int i = 1; i < ac; i++)
@@ -80,6 +75,16 @@ int parse_args(int ac, char **av, t_opts *opts, char **host)
             opts->port = atoi(av[i]);
             if (opts->port <= 0 || opts->port > 65535)
                 return (fprintf(stderr, "-p must be between 1 and 65535\n"), -1);
+        }
+        else if (strcmp(av[i], "-f") == 0)
+        {
+            if (++i >= ac)
+                return (fprintf(stderr, "missing value for -f\n"), -1);
+            opts->start_ttl = atoi(av[i]);
+            if (opts->start_ttl <= 0)
+                return (fprintf(stderr, "-f must be > 0\n"), -1);
+            if (opts->start_ttl > opts->max_ttl)
+                return (fprintf(stderr, "first hop out of range\n"), -1);
         }
         else if (av[i][0] == '-')
             return (fprintf(stderr, "unknown option: %s\n", av[i]), -1);

@@ -20,6 +20,7 @@ typedef struct s_opts
     int     nqueries;
     int     port;
     int     no_dns;
+    int     start_ttl;
 }   t_opts;
 
 int             parse_args(int ac, char **av, t_opts *opts, char **host);
